@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ControlVest — Control de Código de Vestimenta en Tiempo Real</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+
+  <!-- Librerías requeridas: TensorFlow.js y Teachable Machine Image -->
+  <!-- Si actualizas los modelos en ./model/, app.js y face_auth.js fuerzan recarga sin caché -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js" defer></script>
+
+  <!-- Lógica modular del frontend -->
+  <script type="module" src="./js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__brand">
+      <div class="brand-badge">CV</div>
+      <div>
+        <h1>ControlVest</h1>
+        <p class="subtitle">Detección de Vestimenta &amp; Identificación Facial en Tiempo Real</p>
+      </div>
+    </div>
+
+    <div class="topbar__status">
+      <span id="statusClothingModel" class="pill pill--neutral">Vestimentas: Cargando...</span>
+      <span id="statusFaceModel" class="pill pill--neutral">Rostros: Cargando...</span>
+      <span id="statusBackend" class="pill pill--neutral">Backend: Verificando...</span>
+      <span id="statusTensors" class="pill pill--info" title="Tensores activos en memoria TF.js">Tensores: 0</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="grid-main">
+      <!-- Panel Principal: Vista en vivo (<video> + <canvas>) y estabilidad -->
+      <article class="card card--camera">
+        <div class="card__header">
+          <div>
+            <h2>Cámara en Vivo &amp; Análisis de Vestimenta</h2>
+            <p class="hint-text">Modelo local: <code>./model/Vestimentas/</code></p>
+          </div>
+          <div class="btn-group">
+            <button id="btnStartCam" type="button" class="btn btn--primary">Iniciar Cámara</button>
+            <button id="btnStopCam" type="button" class="btn btn--secondary" disabled>Detener Cámara</button>
+          </div>
+        </div>
+
+        <div class="video-stage">
+          <!-- El stream WebRTC alimenta <video> y cada frame se dibuja en <canvas> -->
+          <video id="webcam" autoplay playsinline muted></video>
+          <canvas id="captureCanvas" width="640" height="480"></canvas>
+          <div id="videoPlaceholder" class="video-placeholder">
+            <span>Cámara detenida. Haz clic en <strong>Iniciar Cámara</strong> para comenzar.</span>
+          </div>
+        </div>
+
+        <!-- Regla de estabilidad anti-falsos positivos (3 s continuos >= 85%) -->
+        <div class="stability-panel">
+          <div class="stability-panel__top">
+            <div>
+              <span class="label-muted">Estado actual de vestimenta:</span>
+              <strong id="currentClothingState">Sin análisis</strong>
+              <span id="currentClothingConf" class="conf-badge">0.0%</span>
+            </div>
+            <div class="stability-timer">
+              Estabilidad infracción (≥85%):
+              <strong id="stabilityCounter">0.0s / 3.0s</strong>
+            </div>
+          </div>
+
+          <div
+            class="progress-track"
+            role="progressbar"
+            aria-label="Progreso de confirmación de infracción"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <div id="stabilityProgressBar" class="progress-fill"></div>
+          </div>
+
+          <p id="alertBanner" class="alert-banner alert-banner--idle">
+            Esperando inicio de cámara para evaluar vestimenta.
+          </p>
+        </div>
+
+        <!-- Barras de predicción para todas las clases de Vestimentas -->
+        <div class="section-subtitle">Probabilidades — Modelo Vestimentas</div>
+        <div id="clothingBarsGrid" class="bars-grid"></div>
+      </article>
+
+      <!-- Panel Derecho: Identificación Facial + Configuración -->
+      <aside class="sidebar-stack">
+        <article class="card">
+          <div class="card__header">
+            <div>
+              <h2>Identificación Facial</h2>
+              <p class="hint-text">Modelo local: <code>./model/Rostros/</code></p>
+            </div>
+          </div>
+
+          <div class="face-identity-box">
+            <span class="label-muted">Rostro detectado:</span>
+            <strong id="detectedFaceName" class="face-name">Alumno No Registrado</strong>
+            <span id="detectedFaceConf" class="hint-text">Esperando evaluación facial...</span>
+          </div>
+
+          <div class="section-subtitle">Probabilidades — Modelo Rostros</div>
+          <div id="faceBarsList" class="bars-list"></div>
+        </article>
+
+        <article class="card">
+          <div class="card__header">
+            <h2>Ajustes de Evaluación &amp; API</h2>
+          </div>
+
+          <div class="settings-form">
+            <!-- Ajusta la URL del backend local aquí o en DEFAULT_BACKEND_URL dentro de js/app.js -->
+            <label class="field">
+              <span>URL del Backend FastAPI</span>
+              <input
+                type="url"
+                id="backendUrlInput"
+                value="http://localhost:8000"
+                placeholder="http://localhost:8000"
+              />
+            </label>
+
+            <label class="field">
+              <span>Etiqueta de incumplimiento (auto-detectada de metadata.json)</span>
+              <select id="infractionLabelSelect"></select>
+            </label>
+
+            <!-- Umbrales configurables en js/app.js (CLOTHING_CONFIDENCE_THRESHOLD) y js/face_auth.js (FACE_CONFIDENCE_THRESHOLD) -->
+            <p class="hint-text">
+              Umbrales activos: Vestimenta ≥ <strong>85%</strong> durante <strong>3.0s</strong> |
+              Rostro ≥ <strong>75%</strong>.
+            </p>
+          </div>
+        </article>
+      </aside>
+    </section>
+
+    <!-- Tabla de Historial de Infracciones y Exportación CSV -->
+    <section class="card">
+      <div class="card__header">
+        <div>
+          <h2>Historial de Infracciones</h2>
+          <p id="historyStatusText" class="hint-text">
+            Consultando <code>GET /api/infracciones</code> en el backend local.
+          </p>
+        </div>
+        <div class="btn-group">
+          <button id="btnRefreshHistory" type="button" class="btn btn--secondary">
+            Refrescar Historial
+          </button>
+          <button id="btnExportCsv" type="button" class="btn btn--accent">
+            Exportar a CSV
+          </button>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Nombre del Alumno</th>
+              <th>Estado Detectado</th>
+              <th>Confianza</th>
+              <th>Fecha y Hora</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            <tr>
+              <td colspan="5" class="empty-cell">Cargando historial de infracciones...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
